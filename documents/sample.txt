@@ -1,0 +1,7 @@
+The Solar System
+
+Earth is the third planet from the Sun.
+The Moon orbits Earth.
+Jupiter is the largest planet in the Solar System.
+files = list(Path("documents").glob("*.txt"))
+notes = "\n\n".join(file.read_text(encoding="utf-8") for file in files)
