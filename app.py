@@ -76,7 +76,12 @@ if question:
             chunk["embedding"] = get_embedding(chunk["text"])
             chunk["score"] = similarity(question_embedding, chunk["embedding"])
 
-        best_chunks = sorted(chunks, key=lambda item: item["score"], reverse=True)[:3]
+        best_chunks = sorted(
+            chunks,
+            key=lambda item: item["score"],
+            reverse=True,
+        )[:3]
+
         context = "\n\n".join(
             f"Source: {item['source']}\n{item['text']}"
             for item in best_chunks
@@ -97,6 +102,11 @@ if question:
             ],
         )
         answer = response["message"]["content"]
+
+        source_names = ", ".join(
+            dict.fromkeys(item["source"] for item in best_chunks)
+        )
+        answer += f"\n\nSources: {source_names}"
     else:
         answer = "Add a text file or upload a PDF first."
 
