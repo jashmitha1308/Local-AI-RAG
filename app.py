@@ -24,6 +24,7 @@ def split_into_chunks(text, size=500, overlap=100):
     return chunks
 
 
+@st.cache_data(show_spinner=False)
 def get_embedding(text):
     result = ollama.embeddings(model=EMBED_MODEL, prompt=text)
     return result["embedding"]
