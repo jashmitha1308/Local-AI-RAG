@@ -5,6 +5,7 @@ import re
 import chromadb
 import ollama
 import streamlit as st
+from docx import Document
 from pypdf import PdfReader
 
 
@@ -53,18 +54,40 @@ def split_into_chunks(text):
 def read_document(path):
     """Return document text sections, with PDF page numbers when available."""
     sections = []
+    extension = path.suffix.lower()
 
-    if path.suffix.lower() == ".txt":
+    if extension == ".txt":
         text = path.read_text(encoding="utf-8", errors="ignore")
         sections.append((text, None))
 
-    elif path.suffix.lower() == ".pdf":
+    elif extension == ".pdf":
         reader = PdfReader(str(path))
 
         for page_number, page in enumerate(reader.pages, start=1):
             text = page.extract_text() or ""
             if text.strip():
                 sections.append((text, page_number))
+
+    elif extension == ".docx":
+        document = Document(str(path))
+
+        parts = [
+            paragraph.text.strip()
+            for paragraph in document.paragraphs
+            if paragraph.text.strip()
+        ]
+
+        # Include text in Word tables too.
+        for table in document.tables:
+            for row in table.rows:
+                row_text = " | ".join(
+                    cell.text.strip() for cell in row.cells if cell.text.strip()
+                )
+                if row_text:
+                    parts.append(row_text)
+
+        if parts:
+            sections.append(("\n".join(parts), None))
 
     return sections
 
@@ -76,17 +99,18 @@ def make_id(source, page_number, chunk_number, text):
 
 # ---------- Build the document index ----------
 def rebuild_index():
-    # Remove old records so deleted or changed files don't leave stale text behind.
+    # Remove old records so changed or deleted files don't leave stale text.
     old_records = collection.get(include=[])
     old_ids = old_records.get("ids", [])
 
     if old_ids:
         collection.delete(ids=old_ids)
 
+    supported_types = {".txt", ".pdf", ".docx"}
     files = [
         path
         for path in DOCUMENTS_DIR.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".txt", ".pdf"}
+        if path.is_file() and path.suffix.lower() in supported_types
     ]
 
     if not files:
@@ -107,11 +131,11 @@ def rebuild_index():
             for chunk_number, chunk in enumerate(split_into_chunks(section_text)):
                 chunk_id = make_id(source, page_number, chunk_number, chunk)
 
-                # A dictionary guarantees every ID is unique before Chroma receives it.
                 metadata = {"source": source}
                 if page_number is not None:
                     metadata["page"] = page_number
 
+                # The dictionary ensures IDs are unique before sending to Chroma.
                 records[chunk_id] = {
                     "text": chunk,
                     "metadata": metadata,
@@ -163,7 +187,6 @@ def find_passages(question):
         prompt=question,
     )["embedding"]
 
-    # Semantic search
     semantic = collection.query(
         query_embeddings=[query_embedding],
         n_results=min(15, total),
@@ -183,7 +206,7 @@ def find_passages(question):
             "distance": distance,
         }
 
-    # Also check all indexed text for exact keyword matches.
+    # Add exact keyword matches so relevant sentences aren't missed.
     all_records = collection.get(include=["documents", "metadatas"])
     terms = question_terms(question)
 
@@ -203,7 +226,6 @@ def find_passages(question):
                     "distance": 999,
                 }
 
-    # Rank passages with matching words first, then use semantic distance.
     def rank(item):
         text_words = set(re.findall(r"\b[a-zA-Z0-9]+\b", item["text"].lower()))
         overlap = len(terms & text_words)
@@ -213,7 +235,7 @@ def find_passages(question):
 
 
 def direct_answer_from_passages(question, passages):
-    """Use a matching sentence if Ollama incorrectly refuses to answer."""
+    """Find a matching sentence if Ollama incorrectly says the answer is missing."""
     terms = question_terms(question)
     best_sentence = ""
     best_score = 0
@@ -242,8 +264,8 @@ st.set_page_config(page_title="Local AI Knowledge Retrieval")
 st.title("Local AI Knowledge Retrieval")
 
 uploaded_files = st.file_uploader(
-    "Upload PDF or TXT files",
-    type=["pdf", "txt"],
+    "Upload PDF, TXT, or Word files",
+    type=["pdf", "txt", "docx"],
     accept_multiple_files=True,
 )
 
@@ -262,7 +284,7 @@ if st.button("Rebuild document index"):
         if indexed_count:
             st.success(f"Done. Indexed {indexed_count} text sections.")
         else:
-            st.warning("No readable text found. Add a PDF or TXT file first.")
+            st.warning("No readable text found. Add a PDF, TXT, or DOCX file first.")
 
     except Exception as error:
         st.error("Indexing failed. Check that Ollama is running.")
@@ -304,12 +326,7 @@ if question:
                     source = metadata.get("source", "Unknown file")
                     page = metadata.get("page")
 
-                    citation = (
-                        f"{source} (page {page})"
-                        if page
-                        else source
-                    )
-
+                    citation = f"{source} (page {page})" if page else source
                     context_parts.append(
                         f"Source: {citation}\n{passage['text']}"
                     )
@@ -360,9 +377,8 @@ if question:
                     if direct_answer:
                         answer = direct_answer
 
-                answer += (
-                    "\n\nSources: "
-                    + ", ".join(dict.fromkeys(sources))
+                answer += "\n\nSources: " + ", ".join(
+                    dict.fromkeys(sources)
                 )
 
                 with st.expander("Retrieved passages"):

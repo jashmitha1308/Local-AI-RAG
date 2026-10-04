@@ -2,3 +2,4 @@ streamlit
 ollama
 pypdf
 chromadb
+python-docx
