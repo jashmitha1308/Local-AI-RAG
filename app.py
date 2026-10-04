@@ -1,9 +1,10 @@
 from pathlib import Path
 from io import BytesIO
-import math
+import hashlib
 
-import streamlit as st
+import chromadb
 import ollama
+import streamlit as st
 from pypdf import PdfReader
 
 EMBED_MODEL = "nomic-embed-text"
@@ -30,11 +31,13 @@ def get_embedding(text):
     return result["embedding"]
 
 
-def similarity(a, b):
-    dot = sum(x * y for x, y in zip(a, b))
-    length_a = math.sqrt(sum(x * x for x in a))
-    length_b = math.sqrt(sum(y * y for y in b))
-    return dot / (length_a * length_b)
+@st.cache_resource
+def get_collection():
+    client = chromadb.PersistentClient(path="data/chroma")
+    return client.get_or_create_collection(
+        name="local_ai_documents",
+        metadata={"hnsw:space": "cosine"},
+    )
 
 
 st.title("Local AI Knowledge Retrieval")
@@ -61,9 +64,32 @@ for pdf in pdfs:
         texts.append((f"{pdf.name} (page {page_number})", page_text))
 
 chunks = []
-for filename, text in texts:
-    for chunk in split_into_chunks(text):
-        chunks.append({"source": filename, "text": chunk})
+for source, text in texts:
+    for chunk_number, chunk_text in enumerate(split_into_chunks(text)):
+        chunks.append({
+            "source": source,
+            "text": chunk_text,
+            "id": hashlib.sha256(
+                f"{source}|{chunk_number}|{chunk_text}".encode("utf-8")
+            ).hexdigest(),
+        })
+
+collection = get_collection()
+
+if chunks:
+    sources = list(dict.fromkeys(chunk["source"] for chunk in chunks))
+
+    for source in sources:
+        collection.delete(where={"source": source})
+
+    embeddings = [get_embedding(chunk["text"]) for chunk in chunks]
+
+    collection.upsert(
+        ids=[chunk["id"] for chunk in chunks],
+        documents=[chunk["text"] for chunk in chunks],
+        embeddings=embeddings,
+        metadatas=[{"source": chunk["source"]} for chunk in chunks],
+    )
 
 if st.button("Clear chat"):
     st.session_state.messages = []
@@ -80,20 +106,20 @@ if question:
 
     if chunks:
         question_embedding = get_embedding(question)
+        sources = list(dict.fromkeys(chunk["source"] for chunk in chunks))
 
-        for chunk in chunks:
-            chunk["embedding"] = get_embedding(chunk["text"])
-            chunk["score"] = similarity(question_embedding, chunk["embedding"])
+        results = collection.query(
+            query_embeddings=[question_embedding],
+            n_results=min(3, len(chunks)),
+            where={"source": {"$in": sources}},
+        )
 
-        best_chunks = sorted(
-            chunks,
-            key=lambda item: item["score"],
-            reverse=True,
-        )[:3]
+        passages = results["documents"][0]
+        result_sources = results["metadatas"][0]
 
         context = "\n\n".join(
-            f"Source: {item['source']}\n{item['text']}"
-            for item in best_chunks
+            f"Source: {metadata['source']}\n{passage}"
+            for passage, metadata in zip(passages, result_sources)
         )
 
         response = ollama.chat(
@@ -110,10 +136,10 @@ if question:
                 *st.session_state.messages,
             ],
         )
-        answer = response["message"]["content"]
 
+        answer = response["message"]["content"]
         source_names = ", ".join(
-            dict.fromkeys(item["source"] for item in best_chunks)
+            dict.fromkeys(metadata["source"] for metadata in result_sources)
         )
         answer += f"\n\nSources: {source_names}"
     else:
