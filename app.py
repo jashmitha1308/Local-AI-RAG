@@ -7,7 +7,12 @@ import streamlit as st
 from pypdf import PdfReader
 
 EMBED_MODEL = "nomic-embed-text"
-CHAT_MODEL = "llama3.2"
+CHAT_MODELS = [
+    "llama3.2",
+    "llama3.1:latest",
+    "qwen3:latest",
+    "deepseek-R1:7b",
+]
 DOCUMENTS_FOLDER = Path("documents")
 UPLOADS_FOLDER = DOCUMENTS_FOLDER / "uploads"
 
@@ -42,6 +47,7 @@ def get_collection():
 
 
 st.title("Local AI Knowledge Retrieval")
+CHAT_MODEL = st.sidebar.selectbox("Choose Ollama model", CHAT_MODELS)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
