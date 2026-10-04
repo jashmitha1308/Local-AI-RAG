@@ -175,7 +175,7 @@ if question:
                         f"Passages:\n{context}"
                     ),
                 },
-                *st.session_state.messages,
+                {"role": "user", "content": question},
             ],
         )
 
