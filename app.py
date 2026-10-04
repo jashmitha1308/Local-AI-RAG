@@ -87,6 +87,21 @@ for pdf_path in pdf_files.values():
         source = f"{pdf_path.name} (page {page_number})"
         texts.append((source, page_text))
 
+st.sidebar.subheader("Saved documents")
+
+saved_names = sorted({
+    file.name
+    for file in DOCUMENTS_FOLDER.iterdir()
+    if file.is_file()
+} | {
+    file.name
+    for file in UPLOADS_FOLDER.iterdir()
+    if file.is_file()
+})
+
+for name in saved_names:
+    st.sidebar.write(name)
+
 chunks = []
 
 for source, text in texts:
