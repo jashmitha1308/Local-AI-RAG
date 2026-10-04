@@ -46,8 +46,13 @@ texts = []
 for file in Path("documents").glob("*.txt"):
     texts.append((file.name, file.read_text(encoding="utf-8")))
 
-pdf = st.file_uploader("Upload a PDF", type="pdf")
-if pdf:
+pdfs = st.file_uploader(
+    "Upload PDFs",
+    type="pdf",
+    accept_multiple_files=True,
+)
+
+for pdf in pdfs:
     reader = PdfReader(BytesIO(pdf.getvalue()))
     pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
     texts.append((pdf.name, pdf_text))
