@@ -43,6 +43,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 texts = []
+
 for file in Path("documents").glob("*.txt"):
     texts.append((file.name, file.read_text(encoding="utf-8")))
 
@@ -54,8 +55,10 @@ pdfs = st.file_uploader(
 
 for pdf in pdfs:
     reader = PdfReader(BytesIO(pdf.getvalue()))
-    pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    texts.append((pdf.name, pdf_text))
+
+    for page_number, page in enumerate(reader.pages, start=1):
+        page_text = page.extract_text() or ""
+        texts.append((f"{pdf.name} (page {page_number})", page_text))
 
 chunks = []
 for filename, text in texts:
