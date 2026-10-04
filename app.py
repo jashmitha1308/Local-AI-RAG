@@ -9,6 +9,7 @@ from pypdf import PdfReader
 EMBED_MODEL = "nomic-embed-text"
 CHAT_MODEL = "llama3.2"
 DOCUMENTS_FOLDER = Path("documents")
+UPLOADS_FOLDER = DOCUMENTS_FOLDER / "uploads"
 
 
 def split_into_chunks(text, size=500, overlap=100):
@@ -45,25 +46,40 @@ st.title("Local AI Knowledge Retrieval")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-DOCUMENTS_FOLDER.mkdir(exist_ok=True)
+UPLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 
-texts = []
-
-for text_file in DOCUMENTS_FOLDER.glob("*.txt"):
-    texts.append((text_file.name, text_file.read_text(encoding="utf-8")))
-
-pdfs = st.file_uploader(
-    "Upload PDFs",
-    type="pdf",
+uploaded_files = st.file_uploader(
+    "Upload PDFs or text files",
+    type=["pdf", "txt"],
     accept_multiple_files=True,
 )
 
-for uploaded_pdf in pdfs:
-    safe_name = Path(uploaded_pdf.name).name
-    saved_path = DOCUMENTS_FOLDER / safe_name
-    saved_path.write_bytes(uploaded_pdf.getvalue())
+for uploaded_file in uploaded_files:
+    safe_name = Path(uploaded_file.name).name
+    saved_path = UPLOADS_FOLDER / safe_name
+    saved_path.write_bytes(uploaded_file.getvalue())
 
-for pdf_path in DOCUMENTS_FOLDER.glob("*.pdf"):
+texts = []
+
+text_files = {file.name: file for file in DOCUMENTS_FOLDER.glob("*.txt")}
+text_files.update({
+    file.name: file
+    for file in UPLOADS_FOLDER.glob("*.txt")
+})
+
+for name, text_file in text_files.items():
+    texts.append((
+        name,
+        text_file.read_text(encoding="utf-8", errors="replace"),
+    ))
+
+pdf_files = {file.name: file for file in DOCUMENTS_FOLDER.glob("*.pdf")}
+pdf_files.update({
+    file.name: file
+    for file in UPLOADS_FOLDER.glob("*.pdf")
+})
+
+for pdf_path in pdf_files.values():
     reader = PdfReader(pdf_path)
 
     for page_number, page in enumerate(reader.pages, start=1):
@@ -154,7 +170,7 @@ if question:
         )
         answer += f"\n\nSources: {source_names}"
     else:
-        answer = "Add a text file or upload a PDF first."
+        answer = "Upload a text file or PDF first."
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
     st.rerun()
