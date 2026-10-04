@@ -1,5 +1,4 @@
 from pathlib import Path
-from io import BytesIO
 import hashlib
 
 import chromadb
@@ -9,6 +8,7 @@ from pypdf import PdfReader
 
 EMBED_MODEL = "nomic-embed-text"
 CHAT_MODEL = "llama3.2"
+DOCUMENTS_FOLDER = Path("documents")
 
 
 def split_into_chunks(text, size=500, overlap=100):
@@ -45,10 +45,12 @@ st.title("Local AI Knowledge Retrieval")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+DOCUMENTS_FOLDER.mkdir(exist_ok=True)
+
 texts = []
 
-for file in Path("documents").glob("*.txt"):
-    texts.append((file.name, file.read_text(encoding="utf-8")))
+for text_file in DOCUMENTS_FOLDER.glob("*.txt"):
+    texts.append((text_file.name, text_file.read_text(encoding="utf-8")))
 
 pdfs = st.file_uploader(
     "Upload PDFs",
@@ -56,22 +58,31 @@ pdfs = st.file_uploader(
     accept_multiple_files=True,
 )
 
-for pdf in pdfs:
-    reader = PdfReader(BytesIO(pdf.getvalue()))
+for uploaded_pdf in pdfs:
+    safe_name = Path(uploaded_pdf.name).name
+    saved_path = DOCUMENTS_FOLDER / safe_name
+    saved_path.write_bytes(uploaded_pdf.getvalue())
+
+for pdf_path in DOCUMENTS_FOLDER.glob("*.pdf"):
+    reader = PdfReader(pdf_path)
 
     for page_number, page in enumerate(reader.pages, start=1):
         page_text = page.extract_text() or ""
-        texts.append((f"{pdf.name} (page {page_number})", page_text))
+        source = f"{pdf_path.name} (page {page_number})"
+        texts.append((source, page_text))
 
 chunks = []
+
 for source, text in texts:
     for chunk_number, chunk_text in enumerate(split_into_chunks(text)):
+        chunk_id = hashlib.sha256(
+            f"{source}|{chunk_number}|{chunk_text}".encode("utf-8")
+        ).hexdigest()
+
         chunks.append({
+            "id": chunk_id,
             "source": source,
             "text": chunk_text,
-            "id": hashlib.sha256(
-                f"{source}|{chunk_number}|{chunk_text}".encode("utf-8")
-            ).hexdigest(),
         })
 
 collection = get_collection()
