@@ -1,6 +1,14 @@
 # Local AI Knowledge Retrieval
 
-Ask questions about your text files and PDFs using local AI.
+A local question-answering app for text files and PDFs.
+
+## Features
+
+- Search `.txt` files in `documents`
+- Upload multiple PDFs
+- Keep uploaded PDFs in `documents` for later runs
+- Search relevant passages using Ollama embeddings and Chroma
+- Show source filenames and PDF page numbers
 
 ## Requirements
 
@@ -9,7 +17,7 @@ Ask questions about your text files and PDFs using local AI.
 
 ## Setup on Windows
 
-Open a terminal in this project folder and run:
+Open a terminal in the project folder and run:
 
 ```cmd
 py -m venv .venv
