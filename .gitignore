@@ -4,4 +4,6 @@ data/
 documents/*.pdf
 documents/uploads/
 # Large or generated files
-path/to/large-file
+
+# Generated Chroma database
+data/chroma/
