@@ -3,3 +3,5 @@ __pycache__/
 data/
 documents/*.pdf
 documents/uploads/
+# Large or generated files
+path/to/large-file
