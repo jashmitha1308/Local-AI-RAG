@@ -1,6 +1,9 @@
 from pathlib import Path
 import hashlib
+import json
 import re
+import uuid
+from datetime import datetime
 
 import chromadb
 import ollama
@@ -15,15 +18,19 @@ EMBED_MODEL = "nomic-embed-text"
 
 DOCUMENTS_DIR = Path("documents")
 UPLOADS_DIR = DOCUMENTS_DIR / "uploads"
-CHROMA_DIR = Path("data") / "chroma"
+DATA_DIR = Path("data")
+CHROMA_DIR = DATA_DIR / "chroma"
+CHAT_HISTORY_FILE = DATA_DIR / "chat_history.json"
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 120
 RESULT_COUNT = 5
+SUPPORTED_TYPES = {".txt", ".pdf", ".docx"}
 
 DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ---------- Chroma database ----------
@@ -34,6 +41,75 @@ def get_chroma_client():
 
 client = get_chroma_client()
 collection = client.get_or_create_collection(name="local_ai_documents")
+
+
+# ---------- Saved chat history ----------
+def load_chat_history():
+    if not CHAT_HISTORY_FILE.exists():
+        return []
+
+    try:
+        history = json.loads(CHAT_HISTORY_FILE.read_text(encoding="utf-8"))
+        return history if isinstance(history, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_chat_history():
+    CHAT_HISTORY_FILE.write_text(
+        json.dumps(st.session_state.chat_history, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def save_current_chat():
+    messages = st.session_state.messages
+    if not messages:
+        return
+
+    chat_id = st.session_state.active_chat_id
+
+    if chat_id is None:
+        first_question = next(
+            (
+                message["content"]
+                for message in messages
+                if message["role"] == "user"
+            ),
+            "New chat",
+        )
+        title = first_question.strip()
+        if len(title) > 45:
+            title = title[:42] + "..."
+
+        chat_id = str(uuid.uuid4())
+        st.session_state.active_chat_id = chat_id
+        st.session_state.chat_history.append(
+            {
+                "id": chat_id,
+                "title": title or "New chat",
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "messages": [],
+            }
+        )
+
+    for chat in st.session_state.chat_history:
+        if chat["id"] == chat_id:
+            chat["messages"] = messages
+            chat["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            break
+
+    save_chat_history()
+
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = load_chat_history()
+
+if "active_chat_id" not in st.session_state:
+    st.session_state.active_chat_id = None
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 
 # ---------- Read and split documents ----------
@@ -52,7 +128,6 @@ def split_into_chunks(text):
 
 
 def read_document(path):
-    """Return document text sections, with PDF page numbers when available."""
     sections = []
     extension = path.suffix.lower()
 
@@ -70,18 +145,18 @@ def read_document(path):
 
     elif extension == ".docx":
         document = Document(str(path))
-
         parts = [
             paragraph.text.strip()
             for paragraph in document.paragraphs
             if paragraph.text.strip()
         ]
 
-        # Include text in Word tables too.
         for table in document.tables:
             for row in table.rows:
                 row_text = " | ".join(
-                    cell.text.strip() for cell in row.cells if cell.text.strip()
+                    cell.text.strip()
+                    for cell in row.cells
+                    if cell.text.strip()
                 )
                 if row_text:
                     parts.append(row_text)
@@ -99,22 +174,11 @@ def make_id(source, page_number, chunk_number, text):
 
 # ---------- Build the document index ----------
 def rebuild_index():
-    # Remove old records so changed or deleted files don't leave stale text.
-    old_records = collection.get(include=[])
-    old_ids = old_records.get("ids", [])
-
-    if old_ids:
-        collection.delete(ids=old_ids)
-
-    supported_types = {".txt", ".pdf", ".docx"}
     files = [
         path
         for path in DOCUMENTS_DIR.rglob("*")
-        if path.is_file() and path.suffix.lower() in supported_types
+        if path.is_file() and path.suffix.lower() in SUPPORTED_TYPES
     ]
-
-    if not files:
-        return 0
 
     records = {}
 
@@ -135,7 +199,6 @@ def rebuild_index():
                 if page_number is not None:
                     metadata["page"] = page_number
 
-                # The dictionary ensures IDs are unique before sending to Chroma.
                 records[chunk_id] = {
                     "text": chunk,
                     "metadata": metadata,
@@ -147,11 +210,17 @@ def rebuild_index():
     ids = list(records.keys())
     texts = [records[item_id]["text"] for item_id in ids]
     metadatas = [records[item_id]["metadata"] for item_id in ids]
-    embeddings = []
 
+    # Create all embeddings before replacing the current index.
+    embeddings = []
     for text in texts:
         result = ollama.embeddings(model=EMBED_MODEL, prompt=text)
         embeddings.append(result["embedding"])
+
+    old_records = collection.get(include=[])
+    old_ids = old_records.get("ids", [])
+    if old_ids:
+        collection.delete(ids=old_ids)
 
     collection.add(
         ids=ids,
@@ -206,7 +275,6 @@ def find_passages(question):
             "distance": distance,
         }
 
-    # Add exact keyword matches so relevant sentences aren't missed.
     all_records = collection.get(include=["documents", "metadatas"])
     terms = question_terms(question)
 
@@ -235,7 +303,6 @@ def find_passages(question):
 
 
 def direct_answer_from_passages(question, passages):
-    """Find a matching sentence if Ollama incorrectly says the answer is missing."""
     terms = question_terms(question)
     best_sentence = ""
     best_score = 0
@@ -263,13 +330,15 @@ def direct_answer_from_passages(question, passages):
 st.set_page_config(page_title="Local AI Knowledge Retrieval")
 st.title("Local AI Knowledge Retrieval")
 
-uploaded_files = st.file_uploader(
-    "Upload PDF, TXT, or Word files",
-    type=["pdf", "txt", "docx"],
-    accept_multiple_files=True,
-)
+with st.form("upload_form", clear_on_submit=True):
+    uploaded_files = st.file_uploader(
+        "Upload PDF, TXT, or Word files",
+        type=["pdf", "txt", "docx"],
+        accept_multiple_files=True,
+    )
+    save_uploads = st.form_submit_button("Save uploaded files")
 
-if uploaded_files:
+if save_uploads and uploaded_files:
     for uploaded_file in uploaded_files:
         save_path = UPLOADS_DIR / Path(uploaded_file.name).name
         save_path.write_bytes(uploaded_file.getvalue())
@@ -287,16 +356,106 @@ if st.button("Rebuild document index"):
             st.warning("No readable text found. Add a PDF, TXT, or DOCX file first.")
 
     except Exception as error:
-        st.error("Indexing failed. Check that Ollama is running.")
-        st.exception(error)
+        st.error(
+            "Indexing failed. Make sure Ollama is running and "
+            "nomic-embed-text is installed."
+        )
+        st.caption(str(error))
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
-if st.button("Clear chat"):
-    st.session_state.messages = []
-    st.rerun()
+# ---------- Sidebar ----------
+with st.sidebar:
+    st.header("Manage uploaded files")
 
+    uploaded_paths = sorted(
+        [
+            path
+            for path in UPLOADS_DIR.iterdir()
+            if path.is_file() and path.suffix.lower() in SUPPORTED_TYPES
+        ],
+        key=lambda path: path.name.lower(),
+    )
+
+    if uploaded_paths:
+        selected_name = st.selectbox(
+            "Choose a file to delete",
+            [path.name for path in uploaded_paths],
+        )
+
+        if st.button("Delete selected file"):
+            selected_path = UPLOADS_DIR / selected_name
+            source = selected_path.relative_to(DOCUMENTS_DIR).as_posix()
+
+            collection.delete(where={"source": source})
+            selected_path.unlink()
+
+            st.success(f"Deleted {selected_name}")
+            st.rerun()
+    else:
+        st.caption("No uploaded files.")
+
+    st.divider()
+    st.header("Chat history")
+
+    if st.button("New chat", use_container_width=True):
+        st.session_state.active_chat_id = None
+        st.session_state.messages = []
+        st.rerun()
+
+    history = st.session_state.chat_history
+    sorted_history = sorted(
+        history,
+        key=lambda item: item.get("updated_at", ""),
+        reverse=True,
+    )
+    history_ids = [chat["id"] for chat in sorted_history]
+    options = [None] + history_ids
+    titles = {chat["id"]: chat.get("title", "Saved chat") for chat in history}
+
+    active_id = st.session_state.active_chat_id
+    selector_key = f"chat_selector_{active_id or 'new'}"
+    selected_index = options.index(active_id) if active_id in options else 0
+
+    selected_chat_id = st.selectbox(
+        "Open a saved chat",
+        options,
+        index=selected_index,
+        format_func=lambda chat_id: (
+            "New chat" if chat_id is None else titles.get(chat_id, "Saved chat")
+        ),
+        key=selector_key,
+    )
+
+    if selected_chat_id != active_id:
+        st.session_state.active_chat_id = selected_chat_id
+
+        if selected_chat_id is None:
+            st.session_state.messages = []
+        else:
+            selected_chat = next(
+                chat for chat in history if chat["id"] == selected_chat_id
+            )
+            st.session_state.messages = selected_chat.get("messages", [])
+
+        st.rerun()
+
+    if st.session_state.active_chat_id is not None:
+        if st.button("Delete current chat", use_container_width=True):
+            current_id = st.session_state.active_chat_id
+            st.session_state.chat_history = [
+                chat
+                for chat in st.session_state.chat_history
+                if chat["id"] != current_id
+            ]
+            save_chat_history()
+            st.session_state.active_chat_id = None
+            st.session_state.messages = []
+            st.rerun()
+
+    st.caption("Chat history is saved locally on this computer.")
+
+
+# ---------- Show current conversation ----------
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -307,6 +466,7 @@ if question:
     st.session_state.messages.append(
         {"role": "user", "content": question}
     )
+    save_current_chat()
 
     with st.chat_message("user"):
         st.markdown(question)
@@ -396,4 +556,26 @@ if question:
 
     st.session_state.messages.append(
         {"role": "assistant", "content": answer}
+    )
+    save_current_chat()
+
+
+# ---------- Download latest answer ----------
+latest_answer = next(
+    (
+        message["content"]
+        for message in reversed(st.session_state.messages)
+        if message["role"] == "assistant"
+    ),
+    None,
+)
+
+if latest_answer:
+    st.download_button(
+        "Download latest answer",
+        data=latest_answer,
+        file_name="answer.txt",
+        mime="text/plain",
+        key=f"download_answer_{st.session_state.active_chat_id or 'new'}_"
+            f"{len(st.session_state.messages)}",
     )
